@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Deklan Fusion Monitor periodically
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=3h
+RandomizedDelaySec=30
+Unit=deklan-monitor.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
