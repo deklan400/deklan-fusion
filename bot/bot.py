@@ -11,9 +11,10 @@ from telegram.ext import (
     filters
 )
 
-from config import BOT_TOKEN
-from handlers import start_handler, message_handler, callback_handler
-from utils import ensure_dirs
+# 🟦 FIX IMPORT Wajib pakai prefix 'bot.'
+from bot.config import BOT_TOKEN
+from bot.handlers import start_handler, message_handler, callback_handler
+from bot.utils import ensure_dirs
 
 # ---------------------------------------
 # Logging
