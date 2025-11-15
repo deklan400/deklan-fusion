@@ -5,27 +5,25 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-# Add current directory to path for imports
-sys.path.insert(0, os.path.dirname(__file__))
-
-from config import KEY_DIR
-from utils import ensure_dirs, validate_keys
-from ssh_client import SSHClient
+# ===============================================================
+#  FIX: PAKAI IMPORT BENAR (bot.config, bot.utils, bot.ssh_client)
+# ===============================================================
+from bot.config import KEY_DIR, NODE_KEYS_REQUIRED, DB_PATH, MAX_FILE_SIZE_MB
+from bot.utils import ensure_dirs
+from bot.ssh_client import SSHClient
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "/opt/deklan-fusion/fusion_db.json"
 
-# ===============================================
-# Allowed filenames (harus EXACT)
-# ===============================================
+# ===============================================================
+#  FILE YANG DIIZINKAN (HARUS EXACT)
+# ===============================================================
 VALID_FILES = {
-    "swarm.pem": "Private key untuk RL-Swarm",
+    "swarm.pem": "Private key RL-Swarm",
     "userApiKey.json": "API Key Gensyn",
     "userData.json": "User Data Gensyn"
 }
 
-# Mapping filename ke remote path
 REMOTE_PATHS = {
     "swarm.pem": "/root/ezlabs/swarm.pem",
     "userApiKey.json": "/root/ezlabs/userApiKey.json",
@@ -33,171 +31,173 @@ REMOTE_PATHS = {
 }
 
 
+# ===============================================================
+#  DATABASE HANDLER
+# ===============================================================
 def load_db():
-    """Load database."""
     if not os.path.exists(DB_PATH):
-        return {"vps": {}, "keys": {}}
+        return {"users": {}}
     try:
         with open(DB_PATH, "r") as f:
-            return json.load(f)
+            db = json.load(f)
+            if "users" not in db:
+                db["users"] = {}
+            return db
     except:
-        return {"vps": {}, "keys": {}}
+        return {"users": {}}
 
 
 def save_db(data):
-    """Save database."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with open(DB_PATH, "w") as f:
         json.dump(data, f, indent=2)
 
 
-# ===============================================
-# File Receiver Handler
-# ===============================================
+# ===============================================================
+#  MAIN HANDLER UNTUK FILE UPLOAD
+# ===============================================================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle file upload dan auto-sync ke semua VPS."""
+
+    # Tidak ada file → error
+    if not update.message or not update.message.document:
+        await update.message.reply_text(
+            "⚠ Kirim file dalam bentuk *document*, bukan foto!",
+            parse_mode="Markdown"
+        )
+        return
+
+    document = update.message.document
+    filename = document.file_name
+    user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
-    bot = context.bot
 
-    # handle jika user tidak kirim document
-    if not update.message.document:
-        await bot.send_message(
-            chat_id,
-            "⚠️ Kirim file berupa *document*, bukan foto!",
-            parse_mode="Markdown"
-        )
-        return
-
-    file = update.message.document
-    filename = file.file_name
-
-    # cek apakah file termasuk 3 file penting
+    # ===========================================================
+    # VALIDASI NAMA FILE
+    # ===========================================================
     if filename not in VALID_FILES:
-        await bot.send_message(
-            chat_id,
-            f"❌ *{filename}* tidak dikenal.\n\n"
-            f"Hanya file berikut yang diperbolehkan:\n"
-            f"• swarm.pem\n• userApiKey.json\n• userData.json",
+        await update.message.reply_text(
+            f"❌ File *{filename}* tidak valid.\n\n"
+            "Hanya file berikut yang diizinkan:\n"
+            "• swarm.pem\n• userApiKey.json\n• userData.json",
             parse_mode="Markdown"
         )
         return
 
-    # Ensure directories
+    # ===========================================================
+    # VALIDASI FILE SIZE
+    # ===========================================================
+    file_size_mb = document.file_size / (1024 * 1024)
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        await update.message.reply_text(
+            f"❌ File terlalu besar.\nMaks: {MAX_FILE_SIZE_MB}MB",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ===========================================================
+    # FILE SAVE PER-USER
+    # ===========================================================
     ensure_dirs()
 
-    # ambil file (store per user untuk isolation)
-    user_id = update.effective_user.id
-    file_ref = await bot.get_file(file.file_id)
-    # Store file dengan user_id prefix untuk isolation
-    user_key_dir = os.path.join(KEY_DIR, str(user_id))
+    user_key_dir = os.path.join(KEY_DIR, user_id)
     os.makedirs(user_key_dir, exist_ok=True)
-    file_path = os.path.join(user_key_dir, filename)
-    await file_ref.download_to_drive(file_path)
 
-    # Update database (per user)
+    file_path = os.path.join(user_key_dir, filename)
+
+    tg_file = await context.bot.get_file(document.file_id)
+    await tg_file.download_to_drive(file_path)
+
+    # ===========================================================
+    # UPDATE DATABASE
+    # ===========================================================
     db = load_db()
-    
-    # Initialize user structure if not exists
-    if "users" not in db:
-        db["users"] = {}
-    if str(user_id) not in db["users"]:
-        db["users"][str(user_id)] = {"vps": {}, "keys": {}}
-    
-    db["users"][str(user_id)]["keys"][filename] = file_path
+    if user_id not in db["users"]:
+        db["users"][user_id] = {"vps": {}, "keys": {}}
+
+    db["users"][user_id]["keys"][filename] = file_path
     save_db(db)
 
-    # notif sukses
-    await bot.send_message(
-        chat_id,
-        f"✅ File *{filename}* berhasil disimpan!\n"
+    await update.message.reply_text(
+        f"✅ *{filename}* berhasil disimpan!\n"
         f"📁 Lokasi: `{file_path}`",
         parse_mode="Markdown"
     )
 
-    # Auto-sync ke semua VPS
+    # ===========================================================
+    # AUTO-SYNC KE SEMUA VPS USER
+    # ===========================================================
     await sync_keys_to_all_vps(update, context, filename, file_path)
 
-    # cek apakah semua file sudah lengkap (check user's keys)
-    user_keys = db["users"][str(user_id)]["keys"]
-    missing = []
-    required_files = ["swarm.pem", "userApiKey.json", "userData.json"]
-    for req_file in required_files:
-        if req_file not in user_keys:
-            missing.append(req_file)
-    
+    # ===========================================================
+    # CEK KELENGKAPAN SEMUA 3 FILE
+    # ===========================================================
+    user_keys = db["users"][user_id]["keys"]
+    missing = [k for k in NODE_KEYS_REQUIRED if k not in user_keys]
+
     if not missing:
-        await bot.send_message(
-            chat_id,
-            "🎉 Semua *3 file penting* sudah lengkap!\n"
-            "Bot siap menjalankan node ✔",
+        await update.message.reply_text(
+            "🎉 Semua *3 file Gensyn* sudah lengkap!\n"
+            "Node siap dijalankan ✔",
             parse_mode="Markdown"
         )
     else:
-        await bot.send_message(
-            chat_id,
-            "📌 File tersimpan, tapi ada yang masih kurang:\n"
-            + "\n".join([f"• {m}" for m in missing]),
+        await update.message.reply_text(
+            "📝 File lengkap sebagian, masih kurang:\n" +
+            "\n".join([f"• {m}" for m in missing]),
             parse_mode="Markdown"
         )
 
 
-async def sync_keys_to_all_vps(update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                               filename: str, local_path: str):
-    """Sync key file ke semua VPS user."""
-    user_id = update.effective_user.id
+# ===============================================================
+#  SYNC KE SEMUA VPS USER
+# ===============================================================
+async def sync_keys_to_all_vps(update, context, filename, local_path):
+    user_id = str(update.effective_user.id)
     db = load_db()
-    
-    # Get user's VPS list
-    if "users" not in db:
-        db["users"] = {}
-    if str(user_id) not in db["users"]:
-        db["users"][str(user_id)] = {"vps": {}, "keys": {}}
-    
-    vps_list = db["users"][str(user_id)].get("vps", {})
-    
+
+    vps_list = db["users"].get(user_id, {}).get("vps", {})
+
+    # Jika user belum punya VPS
     if not vps_list:
-        await context.bot.send_message(
-            update.effective_chat.id,
-            "⚠ Tidak ada VPS yang tersimpan. Upload VPS dulu dengan /addvps"
+        await update.message.reply_text(
+            "⚠ Tidak ada VPS tersimpan.\nTambah VPS dengan /addvps",
+            parse_mode="Markdown"
         )
         return
-    
+
     remote_path = REMOTE_PATHS.get(filename)
     if not remote_path:
         return
-    
-    await context.bot.send_message(
-        update.effective_chat.id,
-        f"🔄 Mengirim *{filename}* ke semua VPS Anda..."
+
+    await update.message.reply_text(
+        f"🔄 Mengirim *{filename}* ke seluruh VPS…",
+        parse_mode="Markdown"
     )
-    
+
     success_count = 0
-    for ip, vps_data in vps_list.items():
-        username = vps_data.get("user", "root")
-        password = vps_data.get("password", "")
-        
-        # Ensure remote directory exists
-        remote_dir = os.path.dirname(remote_path)
-        SSHClient.execute(ip, username, password, f"mkdir -p {remote_dir}")
-        
-        # Upload file
-        success, msg = SSHClient.upload_file(ip, username, password, local_path, remote_path)
-        
-        if success:
+
+    for ip, vps in vps_list.items():
+        username = vps["user"]
+        password = vps["password"]
+
+        # Pastikan folder remote ada
+        SSHClient.execute(ip, username, password, f"mkdir -p {os.path.dirname(remote_path)}")
+
+        ok, msg = SSHClient.upload_file(ip, username, password, local_path, remote_path)
+
+        if ok:
             success_count += 1
-            await context.bot.send_message(
-                update.effective_chat.id,
-                f"📤 {filename} → `{ip}` ✅",
+            await update.message.reply_text(
+                f"📤 {filename} → `{ip}` ✓",
                 parse_mode="Markdown"
             )
         else:
-            await context.bot.send_message(
-                update.effective_chat.id,
+            await update.message.reply_text(
                 f"❌ Gagal kirim ke `{ip}`: {msg}",
                 parse_mode="Markdown"
             )
-    
-    await context.bot.send_message(
-        update.effective_chat.id,
-        f"✅ Sync selesai! {success_count}/{len(vps_list)} VPS berhasil."
+
+    await update.message.reply_text(
+        f"✅ Sync selesai! ({success_count}/{len(vps_list)} VPS berhasil)",
+        parse_mode="Markdown"
     )
