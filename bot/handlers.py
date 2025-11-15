@@ -1,37 +1,40 @@
+# deklan-fusion/bot/handlers.py
+
 """
 Telegram Bot Handlers untuk Deklan Fusion.
 """
+
 import os
 import sys
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.ext import ContextTypes
 
-# Add current directory to path for imports
+# Pastikan path lokal ke-import
 sys.path.insert(0, os.path.dirname(__file__))
 
-from bot.config import KEY_DIR, TMP_DIR
-from bot.utils import ensure_dirs
-from bot.auth import is_admin, require_admin
-from bot.actions import (
+# Import dari package lokal
+from .config import KEY_DIR, TMP_DIR  # saat ini belum dipakai, tapi keep untuk future use
+from .utils import ensure_dirs
+from .auth import is_admin, require_admin
+from .actions import (
     add_vps, remove_vps, list_vps,
     node_status, node_start, node_restart, node_stop, node_logs,
     sync_keys_to_all_vps, vps_control_kb, get_user_vps_list, is_vps_owner
 )
-from bot.file_receiver import handle_file
-from bot.keyboard import main_menu
-from bot.reward_checker import check_all_rewards, load_db, check_reward
-from bot.ssh_client import SSHClient
+from .file_receiver import handle_file
+from .keyboard import main_menu
+from .reward_checker import check_all_rewards, load_db, check_reward
+from .ssh_client import SSHClient
 
 logger = logging.getLogger(__name__)
-
-DB_PATH = "/opt/deklan-fusion/fusion_db.json"
 
 
 # ==========================
 # START HANDLER
 # ==========================
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk /start"""
     ensure_dirs()
     welcome_text = (
         "🔥 *Deklan Fusion Bot*\n\n"
@@ -47,19 +50,26 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• userData.json\n\n"
         "Keys akan auto-sync ke semua VPS Anda.\n"
     )
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    if update.message:
+        await update.message.reply_text(
+            welcome_text,
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
 
 
 # ==========================
 # MESSAGE HANDLER
 # ==========================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.document:
+    """Handler utama untuk semua pesan TEXT & Document."""
+
+    # Kalau ini document → dianggap upload keys
+    if update.message and update.message.document:
         await handle_file(update, context)
+        return
+
+    if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
@@ -67,10 +77,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Commands
     if text.startswith("/addvps"):
         await add_vps(update, context)
+
     elif text.startswith("/removevps"):
         await remove_vps(update, context)
+
     elif text.startswith("/listvps"):
         await list_vps(update, context)
+
     elif text.startswith("/menu"):
         await update.message.reply_text(
             "📋 *Main Menu*",
@@ -78,45 +91,62 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
-    # Menu Buttons
+    # Menu Buttons (reply keyboard)
     elif text == "🖥 VPS Connect":
         await list_vps(update, context)
+
     elif text == "🔑 Upload Keys":
         await update.message.reply_text(
             "📤 Upload 3 keys:\n"
             "• swarm.pem\n• userApiKey.json\n• userData.json",
             parse_mode="Markdown"
         )
+
     elif text == "🟢 Node Status":
         await handle_node_status_all(update, context)
+
     elif text == "📈 Check Reward":
         await handle_check_reward(update, context)
+
     elif text == "💾 Swap Menu":
         await handle_swap_menu(update, context)
+
     elif text.startswith("Create ") and "Swap" in text:
         size = text.replace("Create ", "").replace(" Swap", "").strip()
         await handle_create_swap(update, context, size)
+
     elif text == "❌ Remove Swap":
         await handle_remove_swap(update, context)
+
     elif text == "🧹 Clean VPS":
         await handle_clean_vps(update, context)
+
     elif text == "⚙ Update Node":
         await handle_update_node(update, context)
+
     elif text == "🚀 Start Node":
         await handle_start_node_all(update, context)
+
     elif text == "🔄 Restart Node":
         await handle_restart_node_all(update, context)
+
     elif text == "📡 Peer Checker":
         await handle_peer_checker(update, context)
+
     elif text == "📊 Node Info":
         await handle_node_info_all(update, context)
+
     elif text == "⬅️ Back to Menu":
         await update.message.reply_text(
-            "📋 *Main Menu*", parse_mode="Markdown", reply_markup=main_menu()
+            "📋 *Main Menu*",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
         )
+
     else:
         await update.message.reply_text(
-            "❓ Command tidak dikenali. Gunakan /menu.", reply_markup=main_menu()
+            "❓ Command tidak dikenali. Gunakan /menu.",
+            reply_markup=main_menu()
         )
 
 
@@ -124,30 +154,31 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CALLBACK HANDLER
 # ==========================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk semua callback query (inline button)."""
     query = update.callback_query
-    await query.answer()
-    data = query.data
+    if not query:
+        return
 
+    await query.answer()
+    data = query.data or ""
+
+    # Node controls
     if data.startswith("node_status_"):
-        ip = data.replace("node_status_", "")
         await node_status(update, context)
 
     elif data.startswith("node_start_"):
-        ip = data.replace("node_start_", "")
         await node_start(update, context)
 
     elif data.startswith("node_restart_"):
-        ip = data.replace("node_restart_", "")
         await node_restart(update, context)
 
     elif data.startswith("node_stop_"):
-        ip = data.replace("node_stop_", "")
         await node_stop(update, context)
 
     elif data.startswith("node_logs_"):
-        ip = data.replace("node_logs_", "")
         await node_logs(update, context)
 
+    # VPS list/menu
     elif data == "vps_list" or data == "back_to_menu":
         await list_vps(update, context)
 
@@ -163,6 +194,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # STATUS ALL VPS
 # ==========================
 async def handle_node_status_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cek status rl-swarm.service di semua VPS milik user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -183,7 +215,7 @@ async def handle_node_status_all(update: Update, context: ContextTypes.DEFAULT_T
             "systemctl is-active rl-swarm.service 2>/dev/null || echo 'inactive'"
         )
 
-        status = "🟢 active" if (success and "active" in output) else "🔴 inactive"
+        status = "🟢 active" if (success and "active" in (output or "")) else "🔴 inactive"
         results.append(f"`{ip}` → {status}")
 
     msg = "📊 *Status Semua VPS:*\n\n" + "\n".join(results)
@@ -191,9 +223,10 @@ async def handle_node_status_all(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ==========================
-# CHECK REWARD
+# CHECK REWARD (ALL VPS)
 # ==========================
 async def handle_check_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cek reward semua node milik user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -206,31 +239,47 @@ async def handle_check_reward(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     results = []
     for ip, data in vps_list.items():
-        username = data["user"]
-        password = data["password"]
+        username = data.get("user", "root")
+        password = data.get("password", "")
         res = check_reward(ip, username, password)
+        # Pastikan minimal ada ip di result
+        if isinstance(res, dict):
+            res.setdefault("ip", ip)
         results.append(res)
 
-    msg = "🔥 *REWARD REPORT*\n\n"
+    msg_lines = ["🔥 *REWARD REPORT*\n"]
     for r in results:
-        msg += (
-            f"IP: `{r['ip']}`\n"
-            f"Status: {r['status']}\n"
-            f"Score: {r['score']}\n"
-            f"Reward: {r['reward']}\n"
-            f"Peer: `{r['peer']}`\n\n"
+        if not isinstance(r, dict):
+            msg_lines.append("❌ Gagal baca data reward.\n")
+            continue
+
+        ip = r.get("ip", "N/A")
+        status = r.get("status", "N/A")
+        score = r.get("score", "N/A")
+        reward = r.get("reward", "N/A")
+        peer = r.get("peer", "N/A")
+
+        msg_lines.append(
+            f"IP: `{ip}`\n"
+            f"Status: {status}\n"
+            f"Score: {score}\n"
+            f"Reward: {reward}\n"
+            f"Peer: `{peer}`\n"
         )
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text("\n\n".join(msg_lines), parse_mode="Markdown")
 
 
 # ==========================
 # SWAP MENU
 # ==========================
 async def handle_swap_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from bot.keyboard import swap_menu
+    """Tampilkan menu swap."""
+    from .keyboard import swap_menu
     await update.message.reply_text(
-        "💾 *Swap Menu*", parse_mode="Markdown", reply_markup=swap_menu()
+        "💾 *Swap Menu*",
+        parse_mode="Markdown",
+        reply_markup=swap_menu()
     )
 
 
@@ -238,6 +287,7 @@ async def handle_swap_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CREATE SWAP
 # ==========================
 async def handle_create_swap(update: Update, context: ContextTypes.DEFAULT_TYPE, size: str):
+    """Create swap di semua VPS user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -254,18 +304,22 @@ async def handle_create_swap(update: Update, context: ContextTypes.DEFAULT_TYPE,
     fail_count = 0
 
     for ip, data in vps_list.items():
-        username = data["user"]
-        password = data["password"]
+        username = data.get("user", "root")
+        password = data.get("password", "")
 
         # Upload script
-        up, msg = SSHClient.upload_file(ip, username, password,
-                                        script_path, "/tmp/create_swap.sh")
+        up, msg = SSHClient.upload_file(
+            ip, username, password,
+            script_path, "/tmp/create_swap.sh"
+        )
         if not up:
             fail_count += 1
             continue
 
-        ok, out = SSHClient.execute(ip, username, password,
-                                    f"chmod +x /tmp/create_swap.sh && bash /tmp/create_swap.sh {size}")
+        ok, out = SSHClient.execute(
+            ip, username, password,
+            f"chmod +x /tmp/create_swap.sh && bash /tmp/create_swap.sh {size}"
+        )
 
         if ok:
             success_count += 1
@@ -284,6 +338,7 @@ async def handle_create_swap(update: Update, context: ContextTypes.DEFAULT_TYPE,
 # REMOVE SWAP
 # ==========================
 async def handle_remove_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove swap di semua VPS user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -299,7 +354,7 @@ async def handle_remove_swap(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     for ip, data in vps_list.items():
         ok, out = SSHClient.execute(
-            ip, data["user"], data["password"],
+            ip, data.get("user", "root"), data.get("password", ""),
             "swapoff -a && rm -f /swapfile && sed -i '/swapfile/d' /etc/fstab"
         )
         if ok:
@@ -319,6 +374,7 @@ async def handle_remove_swap(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # CLEAN VPS
 # ==========================
 async def handle_clean_vps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clean ringan semua VPS user (apt & journal)."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -334,7 +390,7 @@ async def handle_clean_vps(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for ip, data in vps_list.items():
         ok, out = SSHClient.execute(
-            ip, data["user"], data["password"],
+            ip, data.get("user", "root"), data.get("password", ""),
             "apt-get clean && apt-get autoremove -y && journalctl --vacuum-time=1d"
         )
         if ok:
@@ -351,9 +407,10 @@ async def handle_clean_vps(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
-# UPDATE NODE (FIXED INDENT)
+# UPDATE NODE
 # ==========================
 async def handle_update_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Jalankan scripts/update_node.sh di semua VPS user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -370,8 +427,8 @@ async def handle_update_node(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fail_count = 0
 
     for ip, vps_data in vps_list.items():
-        username = vps_data["user"]
-        password = vps_data["password"]
+        username = vps_data.get("user", "root")
+        password = vps_data.get("password", "")
 
         upload_ok, msg = SSHClient.upload_file(
             ip, username, password,
@@ -416,6 +473,7 @@ async def handle_update_node(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # SHOW VPS CONTROL
 # ==========================
 async def show_vps_control(update: Update, context: ContextTypes.DEFAULT_TYPE, ip: str):
+    """Tampilkan control panel untuk 1 VPS (inline keyboard)."""
     user_id = update.effective_user.id
     db = load_db()
 
@@ -435,6 +493,7 @@ async def show_vps_control(update: Update, context: ContextTypes.DEFAULT_TYPE, i
 # START NODE ALL
 # ==========================
 async def handle_start_node_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start rl-swarm.service di semua VPS user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -450,7 +509,7 @@ async def handle_start_node_all(update: Update, context: ContextTypes.DEFAULT_TY
 
     for ip, vps in vps_list.items():
         ok, out = SSHClient.execute(
-            ip, vps["user"], vps["password"],
+            ip, vps.get("user", "root"), vps.get("password", ""),
             "systemctl start rl-swarm.service"
         )
         if ok:
@@ -470,6 +529,7 @@ async def handle_start_node_all(update: Update, context: ContextTypes.DEFAULT_TY
 # RESTART NODE ALL
 # ==========================
 async def handle_restart_node_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restart rl-swarm.service di semua VPS user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -485,7 +545,7 @@ async def handle_restart_node_all(update: Update, context: ContextTypes.DEFAULT_
 
     for ip, vps_data in vps_list.items():
         ok, out = SSHClient.execute(
-            ip, vps_data["user"], vps_data["password"],
+            ip, vps_data.get("user", "root"), vps_data.get("password", ""),
             "systemctl restart rl-swarm.service"
         )
         if ok:
@@ -505,6 +565,7 @@ async def handle_restart_node_all(update: Update, context: ContextTypes.DEFAULT_
 # PEER CHECKER
 # ==========================
 async def handle_peer_checker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ambil Peer ID dari log di semua VPS user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -518,10 +579,10 @@ async def handle_peer_checker(update: Update, context: ContextTypes.DEFAULT_TYPE
     results = []
     for ip, vps in vps_list.items():
         ok, out = SSHClient.execute(
-            ip, vps["user"], vps["password"],
+            ip, vps.get("user", "root"), vps.get("password", ""),
             "grep -o 'Qm[a-zA-Z0-9]\\{44,\\}' /root/rl-swarm/logs/swarm_launcher.log 2>/dev/null | tail -1 || echo 'N/A'"
         )
-        peer = out.strip() if ok else "N/A"
+        peer = (out or "").strip() if ok else "N/A"
         results.append(f"`{ip}`: `{peer}`")
 
     msg = "📡 *Peer ID Semua VPS:*\n\n" + "\n".join(results)
@@ -532,6 +593,7 @@ async def handle_peer_checker(update: Update, context: ContextTypes.DEFAULT_TYPE
 # NODE INFO ALL
 # ==========================
 async def handle_node_info_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ambil info ringkas (status, score, reward, peer) semua node user."""
     user_id = update.effective_user.id
     db = load_db()
     vps_list = get_user_vps_list(db, user_id)
@@ -544,17 +606,29 @@ async def handle_node_info_all(update: Update, context: ContextTypes.DEFAULT_TYP
 
     results = []
     for ip, vps in vps_list.items():
-        r = check_reward(ip, vps["user"], vps["password"])
+        r = check_reward(ip, vps.get("user", "root"), vps.get("password", ""))
+        if isinstance(r, dict):
+            r.setdefault("ip", ip)
         results.append(r)
 
-    msg = "📊 *Node Info:*\n\n"
+    msg_lines = ["📊 *Node Info:*\n"]
     for r in results:
-        msg += (
-            f"IP: `{r['ip']}`\n"
-            f"Status: {r['status']}\n"
-            f"Score: {r['score']}\n"
-            f"Reward: {r['reward']}\n"
-            f"Peer: `{r['peer']}`\n\n"
+        if not isinstance(r, dict):
+            msg_lines.append("❌ Gagal baca info node.\n")
+            continue
+
+        ip = r.get("ip", "N/A")
+        status = r.get("status", "N/A")
+        score = r.get("score", "N/A")
+        reward = r.get("reward", "N/A")
+        peer = r.get("peer", "N/A")
+
+        msg_lines.append(
+            f"IP: `{ip}`\n"
+            f"Status: {status}\n"
+            f"Score: {score}\n"
+            f"Reward: {reward}\n"
+            f"Peer: `{peer}`\n"
         )
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text("\n\n".join(msg_lines), parse_mode="Markdown")
